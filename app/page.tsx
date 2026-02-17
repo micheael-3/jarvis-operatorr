@@ -5,11 +5,12 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 const JARVIS_API = 'https://www.sim.ai/api/workflows/0f32eaf4-001f-4283-b574-0a618a8b9cd1/run'
+const STORAGE_KEY = 'jarvis_chat_history'
 
 type Message = {
   role: 'user' | 'assistant'
   content: string
-  timestamp: Date
+  timestamp: string
 }
 
 export default function Home() {
@@ -18,13 +19,48 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
+  const [mounted, setMounted] = useState(false)
 
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
+  // Load from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem(STORAGE_KEY)
+    if (saved) {
+      try {
+        setMessages(JSON.parse(saved))
+      } catch (e) {
+        console.error('Failed to load chat history:', e)
+      }
+    }
+    setMounted(true)
+  }, [])
+
+  // Save to localStorage whenever messages change
+  useEffect(() => {
+    if (mounted && messages.length > 0) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages))
+    }
+  }, [messages, mounted])
+
+  // Auto-scroll
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
 
   const send = async () => {
-    if (!input.trim() || isLoading) return
-    const msg: Message = { role: 'user', content: input.trim(), timestamp: new Date() }
-    setMessages(p => [...p, msg])
+    const trimmed = input.trim()
+    if (!trimmed || isLoading) return
+
+    // Handle /reset command
+    if (trimmed === '/reset') {
+      localStorage.removeItem(STORAGE_KEY)
+      setMessages([])
+      setInput('')
+      return
+    }
+
+    const msg: Message = { role: 'user', content: trimmed, timestamp: new Date().toISOString() }
+    const newMessages = [...messages, msg]
+    setMessages(newMessages)
     setInput('')
     setIsLoading(true)
     setStatus('EXECUTING')
@@ -33,27 +69,31 @@ export default function Home() {
       const res = await fetch(JARVIS_API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: msg.content })
+        body: JSON.stringify({ input: trimmed })
       })
       const data = await res.json()
-      setMessages(p => [...p, {
+      const reply: Message = {
         role: 'assistant',
         content: data.output?.content || data.content || JSON.stringify(data, null, 2),
-        timestamp: new Date()
-      }])
+        timestamp: new Date().toISOString()
+      }
+      setMessages(prev => [...prev, reply])
       setStatus('COMPLETED')
     } catch (e) {
-      setMessages(p => [...p, {
+      const errorMsg: Message = {
         role: 'assistant',
         content: `Error: ${e instanceof Error ? e.message : 'Unknown'}`,
-        timestamp: new Date()
-      }])
+        timestamp: new Date().toISOString()
+      }
+      setMessages(prev => [...prev, errorMsg])
       setStatus('ERROR')
     } finally {
       setIsLoading(false)
       setTimeout(() => setStatus(null), 3000)
     }
   }
+
+  if (!mounted) return null
 
   return (
     <div className="flex flex-col h-screen bg-[#0a0a0f]">
@@ -64,24 +104,15 @@ export default function Home() {
             <h1 className="text-xl font-semibold text-white">JARVIS</h1>
             <span className="text-xs text-gray-500 bg-[#12121a] px-2 py-1 rounded">OPERATOR</span>
           </div>
-          {status && <span className={`text-sm ${status==='COMPLETED'?'text-green-500':status==='ERROR'?'text-red-500':'text-yellow-500'}`}>{status}</span>}
+          <div className="flex items-center gap-4">
+            {status && <span className={`text-sm ${status==='COMPLETED'?'text-green-500':status==='ERROR'?'text-red-500':'text-yellow-500'}`}>{status}</span>}
+            <span className="text-xs text-gray-600">{messages.length} messages</span>
+          </div>
         </div>
       </header>
 
       <main className="flex-1 overflow-y-auto px-6 py-4">
         <div className="max-w-4xl mx-auto space-y-4">
-          {messages.length === 0 && (
-            <div className="text-center py-20">
-              <div className="text-6xl mb-4">⚡</div>
-              <h2 className="text-2xl text-white mb-2">Autonomous Execution Operator</h2>
-              <p className="text-gray-500">Execute tasks. Get results.</p>
-              <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-4 max-w-2xl mx-auto">
-                {['Research top AI tools', 'Check my calendar', 'Summarize tech news'].map((ex, i) => (
-                  <button key={i} onClick={() => setInput(ex)} className="p-4 bg-[#12121a] border border-[#1e1e2e] rounded-lg text-sm text-gray-400 hover:text-white hover:border-blue-500 transition-colors text-left">{ex}</button>
-                ))}
-              </div>
-            </div>
-          )}
           {messages.map((m, i) => (
             <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
               <div className={`max-w-3xl rounded-lg px-4 py-3 ${m.role === 'user' ? 'bg-blue-500 text-white' : 'bg-[#12121a] border border-[#1e1e2e] text-white'}`}>
@@ -96,7 +127,7 @@ export default function Home() {
 
       <footer className="border-t border-[#1e1e2e] px-6 py-4">
         <div className="max-w-4xl mx-auto flex gap-4">
-          <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()} placeholder="Enter task..." className="flex-1 bg-[#12121a] border border-[#1e1e2e] rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"/>
+          <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()} placeholder="Enter task... (type /reset to clear history)" className="flex-1 bg-[#12121a] border border-[#1e1e2e] rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"/>
           <button onClick={send} disabled={isLoading||!input.trim()} className="px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50">Execute</button>
         </div>
       </footer>
